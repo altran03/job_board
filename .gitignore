@@ -1,0 +1,37 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.coverage
+.coverage
+.coverage.*
+htmlcov/
+pytest_cache/
+.mypy_cache/
+.pytype/
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.npmrc
+
+# Logs and caches
+logs/
+*.log
+.cache/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS / Editors
+.DS_Store
+.vscode/
+.idea/
+
+# Tooling
+coverage/
