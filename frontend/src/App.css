@@ -96,6 +96,11 @@ button:disabled {
   text-align: center;
   padding: 3rem;
   color: #888;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
 }
 
 .empty-state p {
@@ -108,12 +113,16 @@ button:disabled {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
   background-color: #404040;
+  min-height: 200px;
 }
 
 th {
