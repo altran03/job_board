@@ -35,3 +35,7 @@ logs/
 
 # Tooling
 coverage/
+
+# Gmail OAuth credentials (sensitive)
+backend/credentials.json
+backend/token.json

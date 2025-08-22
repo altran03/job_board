@@ -6,7 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 # Install system deps (optional, keep minimal)
-RUN apt-get update -y && apt-get install -y --no-install-recommends     build-essential  && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    build-essential \
+ && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps
 COPY requirements.txt ./requirements.txt
