@@ -25,8 +25,9 @@ pip install -r backend/requirements.txt
 cd frontend && npm install && cd ..
 ```
 
-### Run both frontend and backend
+### Run the app
 ```bash
+cd frontend
 npm run dev
 ```
 - API: http://localhost:8000/health
@@ -43,7 +44,7 @@ npm run dev
 ## Development
 - Linting/formatting (to add): Ruff/Black for Python, ESLint/Prettier for web
 - DB migrations (to add): Alembic scripts
-- Env config: use `.env` (examples to follow)
+- Env config: use .env (examples to follow)
 
 ## Learning Goals
 - Real-world API integrations (OAuth 2.0, webhooks/polling)
