@@ -15,40 +15,72 @@ from .models import JobApplication
 from .db import SessionLocal
 
 
+# Direct patterns to extract company and job info from subject lines
+APPLICATION_PATTERNS = [
+    # "Thank you for applying to [COMPANY]"
+    r'[Tt]hank you for applying to\s+([A-Z][a-zA-Z\s&]+?)(?:\s*!|\s*\.|\s*$)',
+    # "Application received from [COMPANY]"
+    r'[Aa]pplication received from\s+([A-Z][a-zA-Z\s&]+?)(?:\s*!|\s*\.|\s*$)',
+    # "Your application to [COMPANY]"
+    r'[Yy]our application to\s+([A-Z][a-zA-Z\s&]+?)(?:\s*!|\s*\.|\s*$)',
+    # "Application for [COMPANY]"
+    r'[Aa]pplication for\s+([A-Z][a-zA-Z\s&]+?)(?:\s*!|\s*\.|\s*$)',
+]
+
 # Keywords that indicate job application emails
 RECRUITER_KEYWORDS = [
-    'your application to',
-    'application received',
-    'interview invitation',
-    'online assessment',
-    'coding challenge',
-    'technical interview',
-    'next steps',
-    'application status',
+    # Application confirmations
     'thank you for applying',
-    'we received your application',
+    'thank you for your application',
+    'we have received your application',
+    'application received',
     'application submitted',
+    'application confirmation',
+    'your application has been received',
+    'we received your application',
+    
+    # Interview related
+    'interview invitation',
     'interview scheduling',
-    'assessment invitation',
+    'interview request',
+    'technical interview',
     'next round',
     'final round',
+    
+    # Assessment related
+    'online assessment',
+    'coding challenge',
+    'assessment invitation',
+    'technical assessment',
+    
+    # Status updates
+    'application status',
+    'next steps',
+    'application review',
+    'hiring team will review',
+    'talent acquisition team',
+    
+    # Offer related
     'offer letter',
-    'application review'
+    'job offer',
+    'offer details',
+    
+    # General application keywords
+    'your application to',
+    'application for',
+    'applied to',
+    'careers@',
+    'recruiting@',
+    'talent@',
+    'hiring@'
 ]
 
-# Company name patterns to extract
-COMPANY_PATTERNS = [
-    r'from\s+([A-Z][a-zA-Z\s&]+?)(?:\s+regarding|\s+about|\s+for|$)',
-    r'at\s+([A-Z][a-zA-Z\s&]+?)(?:\s+regarding|\s+about|\s+for|$)',
-    r'([A-Z][a-zA-Z\s&]+?)\s+recruiting',
-    r'([A-Z][a-zA-Z\s&]+?)\s+team',
-    r'([A-Z][a-zA-Z\s&]+?)\s+position'
-]
-
-# Job title patterns
+# Job title patterns - expanded to catch more variations
 TITLE_PATTERNS = [
+    # Software Engineering
     r'Software Engineer',
     r'SWE',
+    r'Software Developer',
     r'Developer',
     r'Programmer',
     r'Full Stack',
@@ -59,11 +91,25 @@ TITLE_PATTERNS = [
     r'Machine Learning',
     r'ML Engineer',
     r'AI Engineer',
+    r'Systems Engineer',
+    r'Intern',
+    
+    # Product roles
     r'Product Manager',
     r'PM',
+    r'Product Owner',
+    
+    # Internships and entry level
     r'Intern',
+    r'Internship',
     r'Graduate',
-    r'Entry Level'
+    r'Entry Level',
+    r'New Grad',
+    r'Recent Graduate',
+    
+    # Specific roles from the emails
+    r'Software Engineer Intern',
+    r'Media Engine'
 ]
 
 
@@ -74,9 +120,20 @@ def is_job_application_email(subject: str, body: str) -> bool:
     subject_lower = subject.lower()
     body_lower = body.lower()
     
+    # Check for direct application patterns first
+    for pattern in APPLICATION_PATTERNS:
+        if re.search(pattern, subject, re.IGNORECASE):
+            return True
+    
     # Check for recruiter keywords in subject or body
     for keyword in RECRUITER_KEYWORDS:
-        if keyword in subject_lower or keyword in body_lower:
+        if keyword.lower() in subject_lower or keyword.lower() in body_lower:
+            return True
+    
+    # Check for career-related email domains
+    career_domains = ['careers.', 'recruiting.', 'talent.', 'hiring.']
+    for domain in career_domains:
+        if domain in subject_lower or domain in body_lower:
             return True
     
     return False
@@ -88,15 +145,45 @@ def extract_company_name(subject: str, body: str) -> Optional[str]:
     """
     text = f"{subject} {body}"
     
-    for pattern in COMPANY_PATTERNS:
+    # Try direct application patterns first (most reliable)
+    for pattern in APPLICATION_PATTERNS:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             company = match.group(1).strip()
             # Clean up common words
-            company = re.sub(r'\b(recruiting|team|department|hr|human\s+resources)\b', '', company, flags=re.IGNORECASE)
+            company = re.sub(r'\b(recruiting|team|department|hr|human\s+resources|talent|acquisition)\b', '', company, flags=re.IGNORECASE)
             company = company.strip()
             if len(company) > 2:  # Avoid very short matches
                 return company
+    
+    # Try to extract from email domain as fallback
+    email_match = re.search(r'@([a-zA-Z]+)\.', text)
+    if email_match:
+        domain = email_match.group(1)
+        # Convert common domains to company names
+        domain_to_company = {
+            'ixl': 'IXL Learning',
+            'tiktok': 'TikTok',
+            'google': 'Google',
+            'meta': 'Meta',
+            'microsoft': 'Microsoft',
+            'apple': 'Apple',
+            'amazon': 'Amazon',
+            'netflix': 'Netflix',
+            'uber': 'Uber',
+            'lyft': 'Lyft',
+            'airbnb': 'Airbnb',
+            'stripe': 'Stripe',
+            'square': 'Square',
+            'salesforce': 'Salesforce',
+            'adobe': 'Adobe',
+            'oracle': 'Oracle',
+            'intel': 'Intel',
+            'nvidia': 'NVIDIA',
+            'amd': 'AMD',
+            'cisco': 'Cisco'
+        }
+        return domain_to_company.get(domain.lower(), domain.title())
     
     return None
 
@@ -219,7 +306,7 @@ def save_parsed_applications(applications: List[Dict[str, Any]]) -> int:
     
     try:
         for app_data in applications:
-            # Check if application already exists (by email_id)
+            # Check if application already exists (by title, company, and date)
             existing = db.query(JobApplication).filter(
                 JobApplication.title == app_data['title'],
                 JobApplication.company == app_data['company'],

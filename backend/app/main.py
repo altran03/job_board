@@ -1,6 +1,7 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import and_
 
 from . import schemas, models
 from .db import Base, engine, get_db
@@ -27,6 +28,21 @@ def health():
 
 @app.post("/jobs", response_model=schemas.JobApplication, status_code=201)
 def create_job(job: schemas.JobApplicationCreate, db: Session = Depends(get_db)):
+    # Check for duplicate before creating
+    existing_job = db.query(models.JobApplication).filter(
+        and_(
+            models.JobApplication.title == job.title,
+            models.JobApplication.company == job.company,
+            models.JobApplication.date_applied == job.date_applied
+        )
+    ).first()
+    
+    if existing_job:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job application with this title, company, and date already exists."
+        )
+    
     instance = models.JobApplication(
         title=job.title,
         company=job.company,
@@ -43,6 +59,58 @@ def list_jobs(db: Session = Depends(get_db)):
     return db.query(models.JobApplication).order_by(models.JobApplication.date_applied.desc()).all()
 
 
+@app.get("/jobs/{job_id}", response_model=schemas.JobApplication)
+def get_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(models.JobApplication).filter(models.JobApplication.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job application not found")
+    return job
+
+
+@app.put("/jobs/{job_id}", response_model=schemas.JobApplication)
+def update_job(job_id: int, job_update: schemas.JobApplicationUpdate, db: Session = Depends(get_db)):
+    job = db.query(models.JobApplication).filter(models.JobApplication.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job application not found")
+    
+    # Update fields if provided
+    if job_update.title is not None:
+        job.title = job_update.title
+    if job_update.company is not None:
+        job.company = job_update.company
+    if job_update.date_applied is not None:
+        job.date_applied = job_update.date_applied
+    if job_update.status is not None:
+        job.status = job_update.status
+    
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@app.patch("/jobs/{job_id}", response_model=schemas.JobApplication)
+def update_job_status(job_id: int, job_update: schemas.JobApplicationUpdate, db: Session = Depends(get_db)):
+    job = db.query(models.JobApplication).filter(models.JobApplication.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job application not found")
+    
+    job.status = job_update.status
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@app.delete("/jobs/{job_id}")
+def delete_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(models.JobApplication).filter(models.JobApplication.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job application not found")
+    
+    db.delete(job)
+    db.commit()
+    return {"message": "Job application deleted successfully"}
+
+
 @app.post("/gmail/process")
 def process_gmail():
     """
@@ -52,7 +120,7 @@ def process_gmail():
         results = process_gmail_applications()
         return {
             "success": True,
-            "message": f"Processed {results['emails_processed']} emails, saved {results['applications_saved']} applications",
+            "message": f"Processed {results['emails_processed']} emails, saved {results['applications_saved']} new applications",
             "results": results
         }
     except Exception as e:
