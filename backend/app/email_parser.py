@@ -1,6 +1,7 @@
 """
 Email Parser for Job Application Tracking
 Fetches Gmail emails and parses them for job application data.
+Now integrates with Gemini AI for intelligent parsing.
 """
 import re
 from datetime import datetime, date
@@ -13,6 +14,7 @@ from googleapiclient.errors import HttpError
 from .gmail_auth import get_gmail_service
 from .models import JobApplication
 from .db import SessionLocal
+from .gemini_analyzer import analyze_email_with_gemini, is_gemini_available
 
 
 # Direct patterns to extract company and job info from subject lines
@@ -286,6 +288,7 @@ def is_job_application_email(subject: str, body: str) -> bool:
 def extract_company_name(subject: str, body: str, from_email: str = '') -> Optional[str]:
     """
     Extract company name from email subject, body, and sender email.
+    Now with improved domain extraction and company name cleaning.
     """
     text = f"{subject} {body}"
     
@@ -302,28 +305,28 @@ def extract_company_name(subject: str, body: str, from_email: str = '') -> Optio
                 if cleaned_company:
                     return cleaned_company
     
-    # Try to extract from email domain
-    email_match = re.search(r'@([a-zA-Z]+)\.', from_email)
-    if email_match:
-        domain = email_match.group(1).lower()
-        if domain in COMPANY_MAPPING:
-            return COMPANY_MAPPING[domain]
+    # Try to extract from email domain with improved logic
+    company_from_domain = extract_company_from_domain(from_email)
+    if company_from_domain:
+        return company_from_domain
     
     # Try to extract from email domain in body text as fallback
-    email_match = re.search(r'@([a-zA-Z]+)\.', text)
-    if email_match:
-        domain = email_match.group(1).lower()
-        if domain in COMPANY_MAPPING:
-            return COMPANY_MAPPING[domain]
+    email_matches = re.findall(r'@([a-zA-Z0-9.-]+)\.', text)
+    for domain in email_matches:
+        company_from_domain = extract_company_from_domain(f"@{domain}.com")
+        if company_from_domain:
+            return company_from_domain
     
     # Try to extract company names from common patterns in the text
     company_patterns = [
         r'from\s+([A-Z][a-zA-Z\s&]+?)(?:\s*!|\s*\.|\s*$)',
-        r'at\s+([A-Z][a-zA-Z\s&]+?)(?:\s*!|\s*\.|\s*$)',
-        r'within\s+([A-Z][a-zA-Z\s&]+?)(?:\s*!|\s*\.|\s*$)',
-        r'([A-Z][a-zA-Z\s&]+?)\s+team',
-        r'([A-Z][a-zA-Z\s&]+?)\s+recruiting',
-        r'([A-Z][a-zA-Z\s&]+?)\s+talent',
+        r'at\s+([A-Z][a-zA-Z\s+&]+?)(?:\s*!|\s*\.|\s*$)',
+        r'within\s+([A-Z][a-zA-Z\s+&]+?)(?:\s*!|\s*\.|\s*$)',
+        r'([A-Z][a-zA-Z\s+&]+?)\s+team',
+        r'([A-Z][a-zA-Z\s+&]+?)\s+recruiting',
+        r'([A-Z][a-zA-Z\s+&]+?)\s+talent',
+        r'([A-Z][a-zA-Z\s+&]+?)\s+careers',
+        r'([A-Z][a-zA-Z\s+&]+?)\s+company',
     ]
     
     for pattern in company_patterns:
@@ -331,12 +334,67 @@ def extract_company_name(subject: str, body: str, from_email: str = '') -> Optio
         if match:
             company = match.group(1).strip()
             # Clean up common words
-            company = re.sub(r'\b(recruiting|team|department|hr|human\s+resources|talent|acquisition|early\s+career)\b', '', company, flags=re.IGNORECASE)
+            company = re.sub(r'\b(recruiting|team|department|hr|human\s+resources|talent|acquisition|early\s+career|careers|company)\b', '', company, flags=re.IGNORECASE)
             company = company.strip()
             if len(company) > 2:  # Avoid very short matches
                 cleaned_company = clean_company_name(company)
                 if cleaned_company:
                     return cleaned_company
+    
+    return None
+
+
+def extract_company_from_domain(email: str) -> Optional[str]:
+    """
+    Extract company name from email domain with improved logic.
+    """
+    if not email:
+        return None
+    
+    # Extract domain from email
+    domain_match = re.search(r'@([a-zA-Z0-9.-]+)\.', email)
+    if not domain_match:
+        return None
+    
+    domain = domain_match.group(1).lower()
+    
+    # Check known company mappings first
+    if domain in COMPANY_MAPPING:
+        return COMPANY_MAPPING[domain]
+    
+    # Handle common domain patterns
+    if domain.startswith('careers.'):
+        company = domain.replace('careers.', '').replace('career.', '')
+        return clean_company_name(company.title())
+    
+    if domain.startswith('recruiting.'):
+        company = domain.replace('recruiting.', '').replace('recruit.', '')
+        return clean_company_name(company.title())
+    
+    if domain.startswith('talent.'):
+        company = domain.replace('talent.', '')
+        return clean_company_name(company.title())
+    
+    if domain.startswith('hiring.'):
+        company = domain.replace('hiring.', '')
+        return clean_company_name(company.title())
+    
+    if domain.startswith('hr.'):
+        company = domain.replace('hr.', '')
+        return clean_company_name(company.title())
+    
+    # Handle subdomains (e.g., "us.careers.google.com" -> "Google")
+    if '.' in domain:
+        parts = domain.split('.')
+        # Look for the main company part (usually the second-to-last part)
+        if len(parts) >= 2:
+            main_part = parts[-2]  # e.g., "google" from "us.careers.google.com"
+            if main_part not in ['careers', 'recruiting', 'talent', 'hiring', 'hr', 'us', 'uk', 'eu']:
+                return clean_company_name(main_part.title())
+    
+    # If it's a simple domain (e.g., "google.com" -> "google")
+    if '.' not in domain and len(domain) > 2:
+        return clean_company_name(domain.title())
     
     return None
 
@@ -464,31 +522,88 @@ def is_valid_role(role: str) -> bool:
 
 def parse_email_date(email_date: str) -> Optional[date]:
     """
-    Parse email date string to date object.
+    Parse email date string to date object with improved format support.
     """
+    if not email_date:
+        return None
+        
     try:
-        # Try common email date formats
-        for fmt in ['%a, %d %b %Y %H:%M:%S %z', '%d %b %Y %H:%M:%S %z', '%Y-%m-%d']:
+        # Common email date formats (most to least common)
+        formats = [
+            '%a, %d %b %Y %H:%M:%S %z',      # "Wed, 20 Aug 2025 11:20:00 +0000"
+            '%a, %d %b %Y %H:%M:%S',         # "Wed, 20 Aug 2025 11:20:00"
+            '%d %b %Y %H:%M:%S %z',          # "20 Aug 2025 11:20:00 +0000"
+            '%d %b %Y %H:%M:%S',             # "20 Aug 2025 11:20:00"
+            '%Y-%m-%d %H:%M:%S %z',          # "2025-08-20 11:20:00 +0000"
+            '%Y-%m-%d %H:%M:%S',             # "2025-08-20 11:20:00"
+            '%Y-%m-%d',                      # "2025-08-20"
+            '%m/%d/%Y',                      # "08/20/2025"
+            '%d/%m/%Y',                      # "20/08/2025"
+            '%b %d, %Y',                     # "Aug 20, 2025"
+            '%d %b %Y',                      # "20 Aug 2025"
+        ]
+        
+        for fmt in formats:
             try:
-                dt = datetime.strptime(email_date, fmt)
+                dt = datetime.strptime(email_date.strip(), fmt)
                 return dt.date()
             except ValueError:
                 continue
-    except Exception:
-        pass
+                
+        # If no format matches, try to extract just the date part
+        # Look for patterns like "2025-08-20" or "Aug 20, 2025"
+        import re
+        
+        # Try to find date patterns
+        date_patterns = [
+            r'(\d{4}-\d{2}-\d{2})',           # YYYY-MM-DD
+            r'(\d{1,2}/\d{1,2}/\d{4})',      # MM/DD/YYYY or DD/MM/YYYY
+            r'([A-Za-z]{3}\s+\d{1,2},?\s+\d{4})',  # Aug 20, 2025
+            r'(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})',    # 20 Aug 2025
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, email_date)
+            if match:
+                date_str = match.group(1)
+                # Try to parse the extracted date
+                for fmt in ['%Y-%m-%d', '%m/%d/%Y', '%b %d, %Y', '%d %b %Y']:
+                    try:
+                        dt = datetime.strptime(date_str, fmt)
+                        return dt.date()
+                    except ValueError:
+                        continue
+                        
+    except Exception as e:
+        print(f"Error parsing email date '{email_date}': {e}")
     
     return None
 
 
-def fetch_and_parse_emails(max_results: int = 50) -> List[Dict[str, Any]]:
+def fetch_and_parse_emails(max_results: int = 50, days_threshold: int = 7, use_gemini: bool = True) -> List[Dict[str, Any]]:
     """
     Fetch unread emails from Gmail and parse them for job applications.
-    Returns list of parsed job application data.
+    Now supports Gemini AI analysis with time-based filtering.
+    
+    Args:
+        max_results: Maximum number of emails to process
+        days_threshold: Only analyze emails from the past N days (default: 7)
+        use_gemini: Whether to use Gemini AI analysis (default: True)
+    
+    Returns:
+        List of parsed job application data
     """
     service = get_gmail_service()
     if not service:
         print("Failed to get Gmail service")
         return []
+    
+    # Check Gemini availability
+    gemini_available = use_gemini and is_gemini_available()
+    if gemini_available:
+        print(f"🚀 Using Gemini AI analysis with {days_threshold} day threshold")
+    else:
+        print("⚠️  Using regex-based parsing (Gemini not available)")
     
     try:
         # Search for recent emails (not just unread) to catch more job applications
@@ -497,7 +612,7 @@ def fetch_and_parse_emails(max_results: int = 50) -> List[Dict[str, Any]]:
             'is:unread',  # Unread emails
             'from:careers OR from:recruiting OR from:talent OR from:hiring',  # Career emails
             'subject:"thank you for applying" OR subject:"application received" OR subject:"assessment"',  # Specific subjects
-            'after:2025/08/20'  # Recent emails (last few days)
+            f'after:{days_threshold}d'  # Recent emails based on threshold
         ]
         
         all_messages = []
@@ -541,6 +656,7 @@ def fetch_and_parse_emails(max_results: int = 50) -> List[Dict[str, Any]]:
                 date_header = next((h['value'] for h in headers if h['name'] == 'Date'), '')
                 
                 print(f"Processing email: Subject='{subject[:50]}...' From='{from_header}'")
+                print(f"  📅 Raw Date Header: '{date_header}'")
                 
                 # Get email body
                 body = ''
@@ -552,15 +668,48 @@ def fetch_and_parse_emails(max_results: int = 50) -> List[Dict[str, Any]]:
                 elif 'body' in msg['payload'] and 'data' in msg['payload']['body']:
                     body = base64.urlsafe_b64decode(msg['payload']['body']['data']).decode('utf-8')
                 
-                # Check if it's a job application email
-                is_job_email = is_job_application_email(subject, body)
-                print(f"  Is job email: {is_job_email}")
-                
-                if is_job_email:
+                # Use Gemini AI analysis if available, otherwise fall back to regex
+                if gemini_available:
+                    print(f"  🤖 Analyzing with Gemini AI...")
+                    analysis_result = analyze_email_with_gemini(
+                        subject=subject,
+                        body=body,
+                        from_email=from_header,
+                        email_date=date_header,
+                        days_threshold=days_threshold
+                    )
+                    
+                    # Check if Gemini analysis was successful
+                    if analysis_result.get('analysis_method') == 'time_filtered':
+                        print(f"  ⏰ Email skipped (older than {days_threshold} days)")
+                        continue
+                    
+                    is_job_email = analysis_result.get('is_job_email', False)
+                    company = analysis_result.get('company')
+                    title = analysis_result.get('title')
+                    confidence = analysis_result.get('confidence', 'low')
+                    reasoning = analysis_result.get('reasoning', '')
+                    
+                    print(f"  Gemini Analysis - Is job email: {is_job_email}, Confidence: {confidence}")
+                    if reasoning:
+                        print(f"  Reasoning: {reasoning}")
+                    
+                else:
+                    # Fallback to regex parsing
+                    print(f"  🔍 Using regex parsing...")
+                    is_job_email = is_job_application_email(subject, body)
                     company = extract_company_name(subject, body, from_header)
                     title = extract_job_title(subject, body)
+                    confidence = 'low'
+                    reasoning = 'Regex fallback analysis'
+                    
+                    print(f"  Regex Analysis - Is job email: {is_job_email}")
+                
+                if is_job_email:
+                    # Use the email received date, not the analysis date
                     email_date = parse_email_date(date_header)
                     
+                    print(f"  📅 Raw Date: '{date_header}' → Parsed: {email_date}")
                     print(f"  Extracted - Company: {company}, Title: {title}, Date: {email_date}")
                     
                     if company or title:  # At least one should be extracted
@@ -568,10 +717,14 @@ def fetch_and_parse_emails(max_results: int = 50) -> List[Dict[str, Any]]:
                             'email_id': message['id'],
                             'subject': subject,
                             'from': from_header,
-                            'date': email_date or date.today(),
+                            'date': email_date or date.today(),  # Email received date
                             'company': company or 'Unknown Company',
                             'title': title or 'Software Engineer',
-                            'body_preview': body[:200] + '...' if len(body) > 200 else body
+                            'body_preview': body[:200] + '...' if len(body) > 200 else body,
+                            'confidence': confidence,
+                            'analysis_method': analysis_result.get('analysis_method', 'regex') if gemini_available else 'regex',
+                            'reasoning': reasoning,
+                            'email_received_date': date_header  # Store original email date string
                         })
                         print(f"  ✅ Added to parsed applications")
                     else:
@@ -771,15 +924,29 @@ def are_companies_similar(company1: str, company2: str) -> bool:
     return False
 
 
-def process_gmail_applications() -> Dict[str, Any]:
+def process_gmail_applications(days_threshold: int = 7, use_gemini: bool = True, max_results: int = 50) -> Dict[str, Any]:
     """
     Main function to process Gmail for job applications.
-    Returns summary of processing results.
+    Now supports time-based filtering and Gemini AI analysis.
+    
+    Args:
+        days_threshold: Only analyze emails from the past N days (default: 7)
+        use_gemini: Whether to use Gemini AI analysis (default: True)
+        max_results: Maximum number of emails to process (default: 50)
+    
+    Returns:
+        Summary of processing results
     """
-    print("Fetching and parsing Gmail for job applications...")
+    print(f"🚀 Fetching and parsing Gmail for job applications...")
+    print(f"📅 Time threshold: {days_threshold} days")
+    print(f"🤖 AI Analysis: {'Enabled' if use_gemini else 'Disabled'}")
     
     # Fetch and parse emails
-    applications = fetch_and_parse_emails(max_results=50)
+    applications = fetch_and_parse_emails(
+        max_results=max_results,
+        days_threshold=days_threshold,
+        use_gemini=use_gemini
+    )
     print(f"Found {len(applications)} potential job application emails")
     
     # Save to database
@@ -788,7 +955,10 @@ def process_gmail_applications() -> Dict[str, Any]:
     return {
         'emails_processed': len(applications),
         'applications_saved': saved_count,
-        'applications': applications
+        'applications': applications,
+        'days_threshold': days_threshold,
+        'ai_analysis_used': use_gemini,
+        'gemini_available': is_gemini_available()
     }
 
 

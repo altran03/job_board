@@ -17,6 +17,13 @@ type EditJob = {
   status: string
 }
 
+type GeminiStatus = {
+  api_available: boolean
+  model_name: string
+  max_tokens_per_request: number
+  api_key_configured: boolean
+}
+
 const API_BASE = (import.meta.env.VITE_API_BASE as string) || 'http://localhost:8000'
 
 const STATUS_OPTIONS = [
@@ -40,6 +47,18 @@ function App() {
   const [editingJob, setEditingJob] = useState<EditJob | null>(null)
   const [showEditModal, setShowEditModal] = useState(false)
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null)
+  
+  // Gemini AI state
+  const [geminiStatus, setGeminiStatus] = useState<GeminiStatus | null>(null)
+  const [showGeminiControls, setShowGeminiControls] = useState(false)
+  const [advancedSettings, setAdvancedSettings] = useState({
+    daysThreshold: 7,
+    useGemini: true,
+    maxResults: 50
+  })
+  const [testingGemini, setTestingGemini] = useState(false)
+  const [testSubject, setTestSubject] = useState('Thank you for applying to Google')
+  const [testBody, setTestBody] = useState('We have received your application for Software Engineer Intern position...')
 
   const jobsEndpoint = `${API_BASE}/jobs`
 
@@ -58,8 +77,21 @@ function App() {
     }
   }
 
+  const loadGeminiStatus = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/gemini/status`)
+      if (res.ok) {
+        const data = await res.json()
+        setGeminiStatus(data.gemini_status)
+      }
+    } catch (e) {
+      console.log('Could not load Gemini status:', e)
+    }
+  }
+
   useEffect(() => {
     loadJobs()
+    loadGeminiStatus()
   }, [])
 
   const addTestJob = async () => {
@@ -105,6 +137,66 @@ function App() {
       setError(e.message || 'Error fetching emails')
     } finally {
       setFetching(false)
+    }
+  }
+
+  const fetchEmailsAdvanced = async () => {
+    try {
+      setFetching(true)
+      setError(null)
+      setMessage(null)
+      
+      const params = new URLSearchParams({
+        days_threshold: advancedSettings.daysThreshold.toString(),
+        use_gemini: advancedSettings.useGemini.toString(),
+        max_results: advancedSettings.maxResults.toString()
+      })
+      
+      const res = await fetch(`${API_BASE}/gmail/process-advanced?${params}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      
+      if (!res.ok) throw new Error(`Failed to fetch emails: ${res.status}`)
+      const data = await res.json()
+      setMessage(data.message || 'Emails processed successfully!')
+      await loadJobs()
+    } catch (e: any) {
+      setError(e.message || 'Error fetching emails')
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  const testGeminiAnalysis = async () => {
+    try {
+      setTestingGemini(true)
+      setError(null)
+      setMessage(null)
+      
+      const params = new URLSearchParams({
+        subject: testSubject,
+        body: testBody,
+        from_email: 'test@example.com'
+      })
+      
+      const res = await fetch(`${API_BASE}/gemini/test?${params}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      
+      if (!res.ok) throw new Error(`Failed to test Gemini: ${res.status}`)
+      const data = await res.json()
+      
+      if (data.success) {
+        setMessage(`Gemini Analysis: ${JSON.stringify(data.analysis, null, 2)}`)
+      } else {
+        setError(data.message || 'Gemini test failed')
+      }
+    } catch (e: any) {
+      setError(e.message || 'Error testing Gemini')
+    } finally {
+      setTestingGemini(false)
     }
   }
 
@@ -208,7 +300,138 @@ function App() {
         <button onClick={fetchEmails} disabled={loading || creating || fetching}>
           {fetching ? 'Fetching Emails...' : 'Fetch Emails'}
         </button>
+        <button 
+          onClick={() => setShowGeminiControls(!showGeminiControls)}
+          className="gemini-toggle-btn"
+        >
+          {showGeminiControls ? '🤖 Hide AI Controls' : '🤖 Show AI Controls'}
+        </button>
       </div>
+
+      {/* Gemini AI Controls */}
+      {showGeminiControls && (
+        <div className="gemini-controls">
+          <div className="gemini-status">
+            <h3>🤖 Gemini AI Status</h3>
+            {geminiStatus ? (
+              <div className="status-grid">
+                <div className={`status-item ${geminiStatus.api_available ? 'available' : 'unavailable'}`}>
+                  <span>API Status:</span>
+                  <span>{geminiStatus.api_available ? '✅ Available' : '❌ Unavailable'}</span>
+                </div>
+                <div className="status-item">
+                  <span>Model:</span>
+                  <span>{geminiStatus.model_name}</span>
+                </div>
+                <div className="status-item">
+                  <span>Max Tokens:</span>
+                  <span>{geminiStatus.max_tokens_per_request.toLocaleString()}</span>
+                </div>
+                <div className={`status-item ${geminiStatus.api_key_configured ? 'available' : 'unavailable'}`}>
+                  <span>API Key:</span>
+                  <span>{geminiStatus.api_key_configured ? '✅ Configured' : '❌ Missing'}</span>
+                </div>
+              </div>
+            ) : (
+              <p>Loading Gemini status...</p>
+            )}
+          </div>
+
+          <div className="advanced-settings">
+            <h3>⚙️ Advanced Email Processing</h3>
+            <div className="settings-grid">
+              <div className="setting-item">
+                <label>Days Threshold:</label>
+                <select 
+                  value={advancedSettings.daysThreshold}
+                  onChange={(e) => setAdvancedSettings({
+                    ...advancedSettings,
+                    daysThreshold: parseInt(e.target.value)
+                  })}
+                >
+                  <option value={1}>1 day</option>
+                  <option value={3}>3 days</option>
+                  <option value={7}>7 days (default)</option>
+                  <option value={14}>14 days</option>
+                  <option value={30}>30 days</option>
+                </select>
+                <small>Only analyze emails from the past N days</small>
+              </div>
+              
+              <div className="setting-item">
+                <label>Use Gemini AI:</label>
+                <input
+                  type="checkbox"
+                  checked={advancedSettings.useGemini}
+                  onChange={(e) => setAdvancedSettings({
+                    ...advancedSettings,
+                    useGemini: e.target.checked
+                  })}
+                />
+                <small>Enable AI-powered email analysis</small>
+              </div>
+              
+              <div className="setting-item">
+                <label>Max Results:</label>
+                <select 
+                  value={advancedSettings.maxResults}
+                  onChange={(e) => setAdvancedSettings({
+                    ...advancedSettings,
+                    maxResults: parseInt(e.target.value)
+                  })}
+                >
+                  <option value={25}>25 emails</option>
+                  <option value={50}>50 emails (default)</option>
+                  <option value={100}>100 emails</option>
+                  <option value={200}>200 emails</option>
+                </select>
+                <small>Maximum emails to process</small>
+              </div>
+            </div>
+            
+            <div className="advanced-actions">
+              <button 
+                onClick={fetchEmailsAdvanced} 
+                disabled={loading || creating || fetching}
+                className="advanced-fetch-btn"
+              >
+                {fetching ? 'Processing...' : '🚀 Process Emails (Advanced)'}
+              </button>
+            </div>
+          </div>
+
+          <div className="gemini-test">
+            <h3>🧪 Test Gemini Analysis</h3>
+            <div className="test-inputs">
+              <div className="form-group">
+                <label>Test Subject:</label>
+                <input
+                  type="text"
+                  value={testSubject}
+                  onChange={(e) => setTestSubject(e.target.value)}
+                  placeholder="Email subject to test"
+                />
+              </div>
+              <div className="form-group">
+                <label>Test Body:</label>
+                <textarea
+                  value={testBody}
+                  onChange={(e) => setTestBody(e.target.value)}
+                  placeholder="Email body to test"
+                  rows={3}
+                />
+              </div>
+              <button 
+                onClick={testGeminiAnalysis}
+                disabled={testingGemini || !geminiStatus?.api_available}
+                className="test-btn"
+              >
+                {testingGemini ? 'Testing...' : '🧪 Test Analysis'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && <div className="error-message">Error: {error}</div>}
       {message && <div className="success-message">{message}</div>}

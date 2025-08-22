@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
@@ -6,6 +6,7 @@ from sqlalchemy import and_
 from . import schemas, models
 from .db import Base, engine, get_db
 from .email_parser import process_gmail_applications
+from .gemini_analyzer import is_gemini_available, gemini_analyzer
 
 app = FastAPI(title="Smart Job Tracker API")
 
@@ -128,4 +129,102 @@ def process_gmail():
             "success": False,
             "message": f"Error processing Gmail: {str(e)}",
             "results": None
+        }
+
+
+@app.post("/gmail/process-advanced")
+def process_gmail_advanced(
+    days_threshold: int = Query(7, description="Only analyze emails from the past N days", ge=1, le=365),
+    use_gemini: bool = Query(True, description="Whether to use Gemini AI analysis"),
+    max_results: int = Query(50, description="Maximum number of emails to process", ge=1, le=200)
+):
+    """
+    Advanced Gmail processing with configurable parameters.
+    
+    - days_threshold: Only analyze emails from the past N days (1-365)
+    - use_gemini: Whether to use Gemini AI analysis
+    - max_results: Maximum number of emails to process
+    """
+    try:
+        results = process_gmail_applications(
+            days_threshold=days_threshold,
+            use_gemini=use_gemini,
+            max_results=max_results
+        )
+        
+        return {
+            "success": True,
+            "message": f"Processed {results['emails_processed']} emails, saved {results['applications_saved']} new applications",
+            "results": results,
+            "settings": {
+                "days_threshold": days_threshold,
+                "use_gemini": use_gemini,
+                "max_results": max_results
+            }
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error processing Gmail: {str(e)}",
+            "results": None
+        }
+
+
+@app.get("/gemini/status")
+def get_gemini_status():
+    """
+    Get Gemini API status and configuration.
+    """
+    try:
+        stats = gemini_analyzer.get_usage_stats()
+        return {
+            "success": True,
+            "gemini_status": stats,
+            "recommendations": {
+                "token_usage": "Configure days_threshold to control token usage",
+                "free_tier": "Gemini 1.5 Flash is free with generous limits",
+                "fallback": "System automatically falls back to regex parsing if Gemini unavailable"
+            }
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error getting Gemini status: {str(e)}"
+        }
+
+
+@app.post("/gemini/test")
+def test_gemini_analysis(
+    subject: str = Query(..., description="Email subject to test"),
+    body: str = Query(..., description="Email body to test"),
+    from_email: str = Query("", description="Sender email address")
+):
+    """
+    Test Gemini AI analysis on sample email content.
+    """
+    try:
+        if not is_gemini_available():
+            return {
+                "success": False,
+                "message": "Gemini API not available. Check your API key configuration.",
+                "fallback_available": True
+            }
+        
+        from .gemini_analyzer import analyze_email_with_gemini
+        
+        analysis_result = analyze_email_with_gemini(
+            subject=subject,
+            body=body,
+            from_email=from_email
+        )
+        
+        return {
+            "success": True,
+            "analysis": analysis_result,
+            "token_estimate": gemini_analyzer.estimate_token_count(f"{subject}\n\n{body}")
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error testing Gemini analysis: {str(e)}"
         }
