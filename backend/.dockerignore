@@ -1,0 +1,1 @@
+__pycache__/\n*.py[cod]\n*.pyo\n*.pyd\n*.so\n.venv/\n.git/\n.DS_Store\n.env\n.env.*\n
