@@ -9,6 +9,21 @@ Automates and organizes the job hunt with Gmail parsing, Google Calendar reminde
 - Integrations: Gmail API, Google Calendar API, Notion API (planned)
 
 ## Quickstart
+
+### Docker (recommended for easy startup)
+
+```bash
+# Build images and start services
+docker compose up --build
+
+# Stop
+docker compose down
+```
+
+- API: http://localhost:8000/health
+- Web: http://localhost:5173
+- Postgres: localhost:5432 (jobtracker/jobtracker)
+
 ### Prerequisites
 - Python 3.10+
 - Node 18+
