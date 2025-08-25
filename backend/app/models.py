@@ -32,5 +32,6 @@ class JobApplication(Base):
         default=ApplicationStatus.APPLIED,
         nullable=False
     )
+    subject: Mapped[str] = mapped_column(String(500), nullable=True)  # Email subject for duplicate detection
 
 

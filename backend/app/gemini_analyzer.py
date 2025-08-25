@@ -1,12 +1,15 @@
 """
-Gemini API Email Analyzer for Job Application Tracking
+Gemini AI Integration for Email Analysis
 Uses Google's Gemini AI to intelligently parse job application emails.
 """
+
 import os
 import re
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from datetime import datetime, date, timedelta
+from typing import Dict, Any, Optional, List
 import google.generativeai as genai
+from .db import SessionLocal
+from .models import JobApplication
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -59,22 +62,29 @@ class GeminiEmailAnalyzer:
             # Parse email date
             parsed_date = self._parse_email_date(email_date)
             if not parsed_date:
-                return False
+                print(f"⚠️  Could not parse email date: {email_date}")
+                return True  # If we can't parse the date, assume it's recent enough
             
-            # Calculate threshold date
-            threshold_date = datetime.now() - timedelta(days=days_threshold)
+            # Calculate threshold date (make it timezone-aware)
+            threshold_date = datetime.now().replace(tzinfo=None) - timedelta(days=days_threshold)
+            
+            # Make parsed date timezone-naive for comparison
+            if parsed_date.tzinfo:
+                parsed_date = parsed_date.replace(tzinfo=None)
             
             # Check if email is recent
             is_recent = parsed_date >= threshold_date
             
             if not is_recent:
                 print(f"📧 Email from {parsed_date.strftime('%Y-%m-%d')} is older than {days_threshold} days, skipping AI analysis")
+            else:
+                print(f"📧 Email from {parsed_date.strftime('%Y-%m-%d')} is within {days_threshold} days, proceeding with analysis")
             
             return is_recent
             
         except Exception as e:
             print(f"Error checking email date: {e}")
-            return False
+            return True  # If there's an error, assume it's recent enough to analyze
     
     def _parse_email_date(self, email_date: str) -> Optional[datetime]:
         """Parse email date string to datetime object."""
@@ -109,111 +119,177 @@ class GeminiEmailAnalyzer:
         # Rough approximation: 1 token ≈ 4 characters for English text
         return len(text) // 4
     
-    def analyze_job_email(self, subject: str, body: str, from_email: str = '') -> Dict[str, Any]:
+    def _is_follow_up_email(self, subject: str, body: str) -> bool:
+        """
+        Detect if this is a follow-up email, but don't block it entirely.
+        Returns True if it's a follow-up, but we'll still parse it for job data.
+        """
+        text = f"{subject} {body}".lower()
+        
+        # Strong indicators of follow-up emails
+        follow_up_indicators = [
+            'follow up', 'follow-up', 'reminder', 'update', 'next steps',
+            'interview schedule', 'assessment reminder', 'deadline reminder',
+            'application status', 'next phase', 'moving forward', 'scheduled',
+            'confirmation', 'confirming', 'reconfirm', 'reschedule',
+            'deadline approaching', 'time sensitive', 'urgent reminder'
+        ]
+        
+        # Check for follow-up patterns
+        for indicator in follow_up_indicators:
+            if indicator in text:
+                return True
+        
+        # Check for email threading indicators
+        threading_patterns = [
+            r're:\s*',  # Re: subject
+            r'fw:\s*',  # Fwd: subject
+            r'fwd:\s*',  # Forward subject
+            r'\[thread\]',  # Thread indicators
+            r'conversation',  # Conversation references
+        ]
+        
+        for pattern in threading_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+        
+        # Check for very short subjects that often indicate follow-ups
+        if len(subject.strip()) < 25 and any(word in text for word in ['reminder', 'update', 'next', 'schedule']):
+            return True
+        
+        return False
+
+    def analyze_job_email(self, subject: str, body: str, from_email: str, email_date: str = None) -> Dict[str, Any]:
         """
         Analyze job application email using Gemini AI.
-        
-        Args:
-            subject: Email subject
-            body: Email body text
-            from_email: Sender email address
-            
-        Returns:
-            Dict containing extracted job application information
+        Now with improved follow-up detection and title parsing.
         """
-        if not self.is_available:
-            print("⚠️  Gemini API not available, falling back to regex parsing")
-            return self._fallback_analysis(subject, body, from_email)
-        
-        # Estimate token usage
-        total_text = f"{subject}\n\n{body}"
-        estimated_tokens = self.estimate_token_count(total_text)
-        
-        if estimated_tokens > MAX_TOKENS_PER_REQUEST:
-            print(f"⚠️  Email too long ({estimated_tokens} estimated tokens), truncating for Gemini analysis")
-            # Truncate body to stay within token limits
-            max_chars = MAX_TOKENS_PER_REQUEST * 4
-            body = body[:max_chars - len(subject)] + "..."
-            total_text = f"{subject}\n\n{body}"
-        
         try:
-            # Create prompt for Gemini
+            # First, check if this is a follow-up email using pattern matching
+            # But don't block it - we'll still parse it for job data
+            is_follow_up = self._is_follow_up_email(subject, body)
+            
+            # Check if email is too old based on threshold
+            if email_date and not self.is_email_recent(email_date, days_threshold=days_threshold):
+                return {
+                    'is_job_email': False,
+                    'company': None,
+                    'title': None,
+                    'status': None,
+                    'confidence': 'high',
+                    'reasoning': f'Email is older than {days_threshold} days (received: {email_date})',
+                    'analysis_method': 'time_filtered'
+                }
+            
+            # Create the analysis prompt
             prompt = self._create_analysis_prompt(subject, body, from_email)
             
-            # Call Gemini API
+            # Estimate token count and truncate if necessary
+            estimated_tokens = self.estimate_token_count(prompt)
+            if estimated_tokens > 30000:  # Gemini 1.5 Flash limit
+                # Truncate body text to fit within token limit
+                max_body_length = 1500  # Conservative estimate
+                body = body[:max_body_length] + "..."
+                prompt = self._create_analysis_prompt(subject, body, from_email)
+                print(f"⚠️  Truncated email body to fit token limit (estimated: {estimated_tokens})")
+            
+            # Generate content using Gemini
             response = self.model.generate_content(prompt)
             
-            if response.text:
-                # Parse Gemini response
-                parsed_data = self._parse_gemini_response(response.text)
-                if parsed_data:
-                    print(f"✅ Gemini analysis successful: {parsed_data.get('company', 'Unknown')} - {parsed_data.get('title', 'Unknown')}")
-                    return parsed_data
-                else:
-                    print("⚠️  Failed to parse Gemini response, using fallback")
-                    return self._fallback_analysis(subject, body, from_email)
-            else:
-                print("⚠️  Empty response from Gemini, using fallback")
-                return self._fallback_analysis(subject, body, from_email)
-                
+            if response and response.text:
+                # Parse the AI response
+                parsed_result = self._parse_gemini_response(response.text)
+                if parsed_result:
+                    # Add analysis method and follow-up flag
+                    parsed_result['analysis_method'] = 'gemini_ai'
+                    parsed_result['is_follow_up'] = is_follow_up
+                    
+                    # If it's a follow-up email, we still want to parse it for job data
+                    # but mark it appropriately so duplicate detection can handle it
+                    if is_follow_up:
+                        parsed_result['reasoning'] = f"Follow-up email: {parsed_result.get('reasoning', '')}"
+                    
+                    return parsed_result
+            
+            # Fallback to regex parsing if Gemini fails
+            print("⚠️  Gemini analysis failed, falling back to regex parsing")
+            fallback_result = self._fallback_analysis(subject, body, from_email)
+            if fallback_result:
+                fallback_result['is_follow_up'] = is_follow_up
+            return fallback_result
+            
         except Exception as e:
-            print(f"❌ Gemini API error: {e}, using fallback analysis")
-            return self._fallback_analysis(subject, body, from_email)
+            print(f"Error in Gemini analysis: {e}")
+            # Fallback to regex parsing
+            fallback_result = self._fallback_analysis(subject, body, from_email)
+            if fallback_result:
+                fallback_result['is_follow_up'] = self._is_follow_up_email(subject, body)
+            return fallback_result
     
     def _create_analysis_prompt(self, subject: str, body: str, from_email: str) -> str:
-        """Create the prompt for Gemini analysis."""
-        return f"""
-You are an expert AI assistant that analyzes job application emails. Your task is to extract key information with high accuracy.
+        """
+        Create a detailed prompt for Gemini AI to analyze job application emails.
+        """
+        prompt = f"""
+You are an expert at analyzing job application emails. Your task is to determine if an email is a job application and extract key information.
 
-Email Subject: {subject}
+**Email to analyze:**
+Subject: {subject}
 From: {from_email}
-Body: {body}
+Body: {body[:2000]}...
 
-Please analyze this email and extract the following information:
+**IMPORTANT RULES:**
 
-1. **Is this a job application related email?** (yes/no)
-   - Look for keywords like: application, applied, position, role, job, career, hiring, recruiting
-   - Consider both subject and body content
+1. **Email Classification:**
+   - Mark as job application if it contains ANY job-related information
+   - This includes: application confirmations, interview invitations, follow-up emails, reminders, status updates
+   - Follow-up emails are still job-related and should be parsed for company/title data
+   - **BE PERMISSIVE**: If you see words like "apply", "application", "intern", "career", "job", "position", "role", "hiring", "recruiting" - mark it as a job email
+   - When in doubt, mark as job email (let the system handle duplicates)
 
-2. **Company name** (if found)
-   - Extract the actual company name, not generic terms
-   - Look for company names in: sender email domain, email body, subject line
-   - Examples: "Google", "Microsoft", "Amazon", "Meta", "Apple"
-   - Avoid: "recruiting team", "talent acquisition", "HR department"
+2. **Company Name Extraction:**
+   - Extract ONLY the actual company name, not email domains or generic text
+   - Avoid extracting: "The IBM Talent Acquisition", "your contact information is accurate", "we were paying her", "may arise", "your own time i", "your request", "our"
+   - Look for patterns like: "Thank you for applying to [COMPANY]", "Application received from [COMPANY]", "Your application to [COMPANY]"
+   - If company name is unclear, use the email domain as fallback
+   - **IMPORTANT**: For TikTok emails, extract "TikTok" as the company name
 
-3. **Job title/position** (if found)
-   - Extract the specific job title or role
-   - Look for titles like: "Software Engineer", "Data Scientist", "Product Manager", etc.
-   - Include level if mentioned: "Senior", "Junior", "Intern", "Lead"
-   - Examples: "Software Engineer Intern", "Senior Data Scientist", "Product Manager"
+3. **Job Title Extraction:**
+   - Extract the ACTUAL job title, not email body text mixed in
+   - Avoid titles like: "Software Engineer Intern (The IBM Talent Acquisition)", "Software Engineer Intern (depending on the)", "Software Engineer Intern (thank you for applying to the)"
+   - Look for specific roles in parentheses like: "Software Engineer Intern (Media Engine)", "Software Engineer Intern (Live Services)"
    - Include the role or position if given for example "(Media Engine), (Live Services)"
+   - If no specific role found, use generic titles like "Software Engineer Intern" or "Software Engineer"
+   - **IMPORTANT**: For TikTok emails with "Media Engine" or "Live Service", extract the full title
 
-4. **Application status** (if found)
-   - Current status: "applied", "interview", "offer", "rejection", "assessment", "screening"
-   - Look for action words: "received", "reviewing", "invited", "scheduled", "accepted"
+4. **Follow-up Email Handling:**
+   - Follow-up emails (reminders, updates, next steps) are still job-related
+   - Parse them for company and title information
+   - The system will handle duplicates automatically
 
-5. **Confidence level** (high/medium/low)
-   - High: Clear company name and job title
-   - Medium: Some information clear, some unclear
-   - Low: Limited or unclear information
-
-Return your response in this exact JSON format:
+**Output Format (JSON only):**
 {{
     "is_job_email": true/false,
     "company": "Company Name or null",
-    "title": "Job Title or null",
-    "status": "Application Status or null",
+    "title": "Job Title or null", 
+    "status": "Applied/Interview/Assessment/Offer/Rejected or null",
     "confidence": "high/medium/low",
-    "reasoning": "Brief explanation of your analysis and what you found"
+    "reasoning": "Brief explanation of your analysis"
 }}
 
-**Important Rules:**
-- Only return valid JSON
-- Use null for fields you cannot determine
-- Be specific with company names (avoid generic terms)
-- Include full job titles when possible
-- If unsure, use lower confidence levels
+**Examples of what to extract:**
+- "Thank you for applying to TikTok" → company: "TikTok", title: "Software Engineer Intern"
+- "Software Engineer Intern (Media Engine)" → title: "Software Engineer Intern (Media Engine)"
+- "Application received from Roblox" → company: "Roblox", title: "Software Engineer Intern"
+
+**Examples of what to avoid:**
+- "Software Engineer Intern (The IBM Talent Acquisition)" → title: "Software Engineer Intern" (remove the parenthetical text)
+- Follow-up emails → is_job_email: false
+- Generic text like "your contact information is accurate" → company: null
+
+Analyze this email and provide your response in the exact JSON format above.
 """
+        return prompt
     
     def _parse_gemini_response(self, response_text: str) -> Optional[Dict[str, Any]]:
         """Parse Gemini's response into structured data."""

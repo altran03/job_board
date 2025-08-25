@@ -13,6 +13,7 @@ class JobApplicationBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     company: str = Field(..., min_length=1, max_length=255)
     date_applied: date
+    subject: Optional[str] = Field(None, max_length=500)  # Email subject for duplicate detection
 
 
 class JobApplicationCreate(JobApplicationBase):
@@ -24,11 +25,13 @@ class JobApplicationUpdate(BaseModel):
     company: Optional[str] = Field(None, min_length=1, max_length=255)
     date_applied: Optional[date] = None
     status: Optional[ApplicationStatus] = None
+    subject: Optional[str] = Field(None, max_length=500)
 
 
 class JobApplication(JobApplicationBase):
     id: int
     status: ApplicationStatus
+    subject: Optional[str] = None
 
     class Config:
         from_attributes = True

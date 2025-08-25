@@ -607,12 +607,37 @@ def fetch_and_parse_emails(max_results: int = 50, days_threshold: int = 7, use_g
     
     try:
         # Search for recent emails (not just unread) to catch more job applications
-        # Try multiple search queries to catch different types of emails
+        # Use simple Gmail search queries that actually work
         search_queries = [
-            'is:unread',  # Unread emails
-            'from:careers OR from:recruiting OR from:talent OR from:hiring',  # Career emails
-            'subject:"thank you for applying" OR subject:"application received" OR subject:"assessment"',  # Specific subjects
-            f'after:{days_threshold}d'  # Recent emails based on threshold
+            # Simple keyword searches (Gmail handles these well)
+            f'newer_than:{days_threshold}d subject:apply',
+            f'newer_than:{days_threshold}d subject:application',
+            f'newer_than:{days_threshold}d subject:intern',
+            f'newer_than:{days_threshold}d subject:career',
+            f'newer_than:{days_threshold}d subject:job',
+            f'newer_than:{days_threshold}d subject:position',
+            
+            # Company-specific searches
+            f'newer_than:{days_threshold}d subject:tiktok',
+            f'newer_than:{days_threshold}d subject:roblox',
+            f'newer_than:{days_threshold}d subject:ibm',
+            f'newer_than:{days_threshold}d subject:ixl',
+            
+            # Domain-based searches
+            f'newer_than:{days_threshold}d from:@tiktok.com',
+            f'newer_than:{days_threshold}d from:@roblox.com',
+            f'newer_than:{days_threshold}d from:@ibm.com',
+            f'newer_than:{days_threshold}d from:@ixl.com',
+            f'newer_than:{days_threshold}d from:@careers',
+            f'newer_than:{days_threshold}d from:@recruiting',
+            
+            # More specific searches for TikTok
+            f'newer_than:{days_threshold}d "thank you for applying to tiktok"',
+            f'newer_than:{days_threshold}d "media engine"',
+            f'newer_than:{days_threshold}d "live service"',
+            
+            # Fallback: just get recent emails and filter by content
+            f'newer_than:{days_threshold}d'
         ]
         
         all_messages = []
@@ -712,7 +737,16 @@ def fetch_and_parse_emails(max_results: int = 50, days_threshold: int = 7, use_g
                     print(f"  📅 Raw Date: '{date_header}' → Parsed: {email_date}")
                     print(f"  Extracted - Company: {company}, Title: {title}, Date: {email_date}")
                     
-                    if company or title:  # At least one should be extracted
+                    # More permissive logic: accept emails if they have company OR title OR contain job keywords
+                    has_company = company and company != 'Unknown Company'
+                    has_title = title and title != 'Software Engineer'  # Default fallback title
+                    has_job_keywords = any(keyword in f"{subject} {body}".lower() for keyword in [
+                        'apply', 'application', 'intern', 'career', 'job', 'position', 'role', 'hiring', 'recruiting'
+                    ])
+                    
+                    print(f"  Validation - Has company: {has_company}, Has title: {has_title}, Has job keywords: {has_job_keywords}")
+                    
+                    if has_company or has_title or has_job_keywords:
                         parsed_applications.append({
                             'email_id': message['id'],
                             'subject': subject,
@@ -728,9 +762,9 @@ def fetch_and_parse_emails(max_results: int = 50, days_threshold: int = 7, use_g
                         })
                         print(f"  ✅ Added to parsed applications")
                     else:
-                        print(f"  ❌ Failed to extract company or title")
+                        print(f"  ❌ Failed validation - No company, title, or job keywords found")
                 else:
-                    print(f"  ❌ Not identified as job application email")
+                    print(f"  ❌ Not identified as job application email by AI/regex")
                         
             except Exception as e:
                 print(f"Error parsing email {message['id']}: {e}")
@@ -741,6 +775,138 @@ def fetch_and_parse_emails(max_results: int = 50, days_threshold: int = 7, use_g
     except HttpError as error:
         print(f"Error fetching emails: {error}")
         return []
+
+
+def normalize_company_name(company_name: str) -> str:
+    """
+    Normalize company names for consistency in the database.
+    """
+    if not company_name:
+        return company_name
+    
+    # Convert to title case for consistency
+    normalized = company_name.strip().title()
+    
+    # Handle common company name variations
+    company_mappings = {
+        'Ibm': 'IBM',
+        'Meta': 'Meta',
+        'Facebook': 'Meta',  # Consolidate Facebook to Meta
+        'Facebookmail': 'Meta',
+        'Tiktok': 'TikTok',
+        'Ixl': 'IXL Learning',
+        'Roblox': 'Roblox',
+        'Google': 'Google',
+        'Microsoft': 'Microsoft',
+        'Apple': 'Apple',
+        'Amazon': 'Amazon',
+        'Netflix': 'Netflix',
+        'Uber': 'Uber',
+        'Lyft': 'Lyft',
+        'Airbnb': 'Airbnb',
+        'Stripe': 'Stripe',
+        'Square': 'Square',
+        'Salesforce': 'Salesforce',
+        'Adobe': 'Adobe',
+        'Oracle': 'Oracle',
+        'Intel': 'Intel',
+        'Nvidia': 'NVIDIA',
+        'Amd': 'AMD',
+        'Cisco': 'Cisco'
+    }
+    
+    # Apply mappings
+    for key, value in company_mappings.items():
+        if normalized == key:
+            return value
+    
+    return normalized
+
+
+def are_applications_similar(app1: Dict[str, Any], app2: Dict[str, Any]) -> bool:
+    """
+    Check if two applications are likely the same application (not just same company).
+    This helps distinguish between different applications vs follow-up communications.
+    """
+    # If companies are different, they're different applications
+    if not are_companies_similar(app1['company'], app2['company']):
+        return False
+    
+    # If dates are very far apart (>30 days), they're likely different applications
+    date1 = app1['date'] if isinstance(app1['date'], date) else app1['date']
+    date2 = app2['date'] if isinstance(app2['date'], date) else app2['date']
+    
+    if isinstance(date1, date) and isinstance(date2, date):
+        days_diff = abs((date1 - date2).days)
+        if days_diff > 30:
+            return False  # Different application periods
+    
+    # Check if titles are similar (same role/position)
+    title1 = app1['title'].lower() if app1['title'] else ''
+    title2 = app2['title'].lower() if app2['title'] else ''
+    
+    # Extract core role from titles (remove parenthetical details)
+    def extract_core_role(title: str) -> str:
+        # Remove parenthetical content and common suffixes
+        core = re.sub(r'\s*\([^)]*\)', '', title)
+        core = re.sub(r'\s*\([^)]*$', '', core)  # Handle unclosed parentheses
+        core = re.sub(r'\s*-\s*[^-]*$', '', core)  # Remove after dash
+        core = re.sub(r'\s*Intern\s*$', '', core, flags=re.IGNORECASE)
+        core = re.sub(r'\s*Software Engineer\s*$', '', core, flags=re.IGNORECASE)
+        return core.strip()
+    
+    core_role1 = extract_core_role(title1)
+    core_role2 = extract_core_role(title2)
+    
+    # If core roles are similar, likely same application
+    if core_role1 and core_role2:
+        if core_role1 == core_role2 or core_role1 in core_role2 or core_role2 in core_role1:
+            return True
+    
+    # Check for specific application reference patterns
+    subject1 = app1.get('subject', '').lower()
+    subject2 = app2.get('subject', '').lower()
+    
+    # Look for application reference numbers or specific identifiers
+    ref_patterns = [
+        r'ref[:\s]*(\d+)',  # "Ref: 54845"
+        r'application\s+(\d+)',  # "Application 54845"
+        r'position\s+(\d+)',  # "Position 54845"
+        r'role\s+(\d+)',  # "Role 54845"
+    ]
+    
+    ref1 = None
+    ref2 = None
+    
+    for pattern in ref_patterns:
+        match1 = re.search(pattern, subject1)
+        match2 = re.search(pattern, subject2)
+        if match1:
+            ref1 = match1.group(1)
+        if match2:
+            ref2 = match2.group(1)
+    
+    # If both have the same reference number, they're the same application
+    if ref1 and ref2 and ref1 == ref2:
+        return True
+    
+    # Check for follow-up email patterns
+    follow_up_indicators = [
+        'next steps', 'action required', 'assessment', 'interview', 'reminder',
+        'update', 'follow up', 'next phase', 'next round', 'coding challenge'
+    ]
+    
+    has_follow_up1 = any(indicator in subject1 for indicator in follow_up_indicators)
+    has_follow_up2 = any(indicator in subject2 for indicator in follow_up_indicators)
+    
+    # If one is a follow-up and they're from the same company within a reasonable timeframe,
+    # they're likely the same application
+    if (has_follow_up1 or has_follow_up2) and isinstance(date1, date) and isinstance(date2, date):
+        days_diff = abs((date1 - date2).days)
+        if days_diff <= 7:  # Within a week
+            return True
+    
+    return False
 
 
 def save_parsed_applications(applications: List[Dict[str, Any]]) -> int:
@@ -765,6 +931,9 @@ def save_parsed_applications(applications: List[Dict[str, Any]]) -> int:
             title = app_data['title']
             company = app_data['company']
             
+            # Normalize company name for consistency
+            company = normalize_company_name(company)
+            
             # Truncate if too long (database field is VARCHAR(255))
             if len(title) > 250:
                 title = title[:247] + "..."
@@ -774,27 +943,28 @@ def save_parsed_applications(applications: List[Dict[str, Any]]) -> int:
                 company = company[:247] + "..."
                 print(f"Truncated long company: {company}")
             
-            # Check for existing applications with the same company and date
-            # This prevents duplicate entries for the same company from multiple emails
-            existing = db.query(JobApplication).filter(
-                JobApplication.company == company,
-                JobApplication.date_applied == app_data['date']
-            ).first()
-            
-            if existing:
-                print(f"Skipped duplicate: {company} - {title} (already exists)")
-                continue
-            
-            # Additional check: look for similar company names on the same date
-            similar_companies = db.query(JobApplication).filter(
-                JobApplication.date_applied == app_data['date']
+            # SMART DUPLICATE DETECTION: Check if this is a follow-up for an existing application
+            existing_company_apps = db.query(JobApplication).filter(
+                JobApplication.company == company
             ).all()
             
             is_duplicate = False
-            for existing_job in similar_companies:
-                # Check if company names are similar (simple similarity check)
-                if are_companies_similar(existing_job.company, company):
-                    print(f"Skipped similar company: {company} (similar to {existing_job.company})")
+            for existing_app in existing_company_apps:
+                # Convert existing app to dict format for comparison
+                existing_dict = {
+                    'company': existing_app.company,
+                    'title': existing_app.title,
+                    'date': existing_app.date_applied,
+                    'subject': existing_app.subject or ''  # Use the subject field from the model
+                }
+                
+                # Check if this new application is similar to an existing one
+                if are_applications_similar(app_data, existing_dict):
+                    print(f"🚫 BLOCKED: {company} - {title} is a follow-up for existing application from {existing_app.date_applied}")
+                    print(f"  Existing: {existing_app.title}")
+                    print(f"  New: {title}")
+                    print(f"  Existing Subject: {existing_app.subject}")
+                    print(f"  New Subject: {app_data.get('subject', '')}")
                     is_duplicate = True
                     break
             
@@ -802,7 +972,8 @@ def save_parsed_applications(applications: List[Dict[str, Any]]) -> int:
                 job_app = JobApplication(
                     title=title,
                     company=company,
-                    date_applied=app_data['date']
+                    date_applied=app_data['date'],
+                    subject=app_data.get('subject', '')  # Store email subject for duplicate detection
                 )
                 db.add(job_app)
                 saved_count += 1
@@ -919,6 +1090,10 @@ def are_companies_similar(company1: str, company2: str) -> bool:
     if c1.endswith('s') and c1[:-1] == c2:
         return True
     if c2.endswith('s') and c2[:-1] == c1:
+        return True
+    
+    # Check for case-insensitive exact match (e.g., "IBM" vs "Ibm")
+    if company1.lower() == company2.lower():
         return True
     
     return False
